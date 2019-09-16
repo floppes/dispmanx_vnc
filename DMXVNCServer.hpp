@@ -156,7 +156,11 @@ private:
 
 	int m_padded_width{};
 	int m_pitch{};
+	int m_dmx_pitch{};
 	Rect m_frameRect{};
+
+	int m_dmx_width{};
+	int m_dmx_height{};
 
 	uint32_t  m_vc_image_ptr{};
 	

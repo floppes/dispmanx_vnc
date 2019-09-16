@@ -65,8 +65,23 @@ void DMXVNCServer::Open()
 	Logger::Get() << "ModeInfo: " << m_modeInfo.width << ", " << m_modeInfo.height << ", " 
 		<< m_modeInfo.transform << ", " << m_modeInfo.input_format;
 
-	/* DispmanX expects buffer rows to be aligned to a 32 bit boundarys */
+	if (m_modeInfo.transform & 1)
+	{
+		/* the image is rotated */
+		m_dmx_width = m_modeInfo.height;
+		m_dmx_height = m_modeInfo.width;
+	}
+	else
+	{
+		m_dmx_width = m_modeInfo.width;
+		m_dmx_height = m_modeInfo.height;
+	}
+
+	Logger::Get() << "DispmanX width: " << m_dmx_width << ", DispmanX height: " << m_dmx_height;
+
+	/* DispmanX expects buffer rows to be aligned to a 32 bit boundary */
 	m_pitch = AlignUp(BPP * m_modeInfo.width, 32);
+	m_dmx_pitch = AlignUp(BPP * m_dmx_width, 32);
 	m_padded_width = m_pitch / BPP;
 
 	if (m_downscale) {
@@ -85,7 +100,7 @@ void DMXVNCServer::Open()
 	m_image = &m_imageBuffer1[0];
 	m_back_image = &m_imageBuffer2[0];
 
-	m_resource.Create(imageType, m_modeInfo.width, m_modeInfo.height, &m_vc_image_ptr);
+	m_resource.Create(imageType, m_dmx_width, m_dmx_height, &m_vc_image_ptr);
 
 	m_mouse.SetLastX(m_padded_width / 2);
 	m_mouse.SetLastY(m_modeInfo.height / 2);
@@ -341,8 +356,143 @@ bool DMXVNCServer::TakePicture()
 
 	m_display.Snapshot(m_resource, transform);
 
-	vc_dispmanx_rect_set(&rect, 0, 0, m_modeInfo.width, m_modeInfo.height);
-	m_resource.ReadData(rect, m_image, m_pitch);
+	vc_dispmanx_rect_set(&rect, 0, 0, m_dmx_width, m_dmx_height);
+
+	if (m_modeInfo.transform & 0x30003)
+	{
+		/* the screen is rotated or flipped */
+		uint8_t* dmx_image = (uint8_t*)malloc(m_dmx_pitch * m_dmx_height);
+
+		m_resource.ReadData(rect, dmx_image, m_dmx_pitch);
+
+		int32_t y = 0;
+
+		for (y = 0; y < m_modeInfo.height; y++)
+		{
+			int32_t dmx_x_offset = 0;
+			int32_t dmx_y_offset = 0;
+
+			switch (m_modeInfo.transform & 3)
+			{
+				case 0:
+					/* 0 degrees */
+					if (m_modeInfo.transform & 0x20000)
+					{
+						/* flip vertical */
+						dmx_y_offset = (m_dmx_height - y - 1) * m_dmx_pitch;
+					}
+					else
+					{
+						dmx_y_offset = y * m_dmx_pitch;
+					}
+					break;
+
+				case 1: // 90 degrees
+					if (m_modeInfo.transform & 0x20000)
+					{
+						/* flip vertical */
+						dmx_x_offset = y * BPP;
+					}
+					else
+					{
+						dmx_x_offset = (m_dmx_width - y - 1) * BPP;
+					}
+					break;
+
+				case 2: // 180 degrees
+					if (m_modeInfo.transform & 0x20000)
+					{
+						/* flip vertical */
+						dmx_y_offset = y * m_dmx_pitch;
+					}
+					else
+					{
+						dmx_y_offset = (m_dmx_height - y - 1) * m_dmx_pitch;
+					}
+					break;
+
+				case 3: // 270 degrees
+					if (m_modeInfo.transform & 0x20000)
+					{
+						/* flip vertical */
+						dmx_x_offset = (m_dmx_width - y - 1) * BPP;
+					}
+					else
+					{
+						dmx_x_offset = y * BPP;
+					}
+					break;
+			}
+
+			int32_t x = 0;
+
+			for (x = 0; x < m_modeInfo.width; x++)
+			{
+				switch (m_modeInfo.transform & 3)
+				{
+					case 0: // 0 degrees
+						if (m_modeInfo.transform & 0x10000)
+						{
+							/* flip horizontal */
+							dmx_x_offset = (m_dmx_width - x - 1) * BPP;
+						}
+						else
+						{
+							dmx_x_offset = x * BPP;
+						}
+						break;
+
+					case 1: // 90 degrees
+						if (m_modeInfo.transform & 0x10000)
+						{
+							/* flip horizontal */
+							dmx_y_offset = (m_dmx_height - x - 1) * m_dmx_pitch;
+						}
+						else
+						{
+							dmx_y_offset = x * m_dmx_pitch;
+						}
+						break;
+
+					case 2: // 180 degrees
+						if (m_modeInfo.transform & 0x10000)
+						{
+							/* flip horizontal */
+							dmx_x_offset = x * BPP;
+						}
+						else
+						{
+							dmx_x_offset = (m_dmx_width - x - 1) * BPP;
+						}
+						break;
+
+					case 3: // 270 degrees
+						if (m_modeInfo.transform & 0x10000)
+						{
+							/* flip horizontal */
+							dmx_y_offset = x * m_dmx_pitch;
+						}
+						else
+						{
+							dmx_y_offset = (m_dmx_height - x - 1) * m_dmx_pitch;
+						}
+						break;
+				}
+
+				uint8_t* m_image_ptr = (uint8_t*)m_image + (y * m_pitch) + (x * BPP);
+				uint8_t* dmx_image_ptr = dmx_image + dmx_x_offset + dmx_y_offset;
+
+				memcpy(m_image_ptr, dmx_image_ptr, BPP);
+			}
+		}
+
+		free(dmx_image);
+		dmx_image = NULL;
+	}
+	else
+	{
+		m_resource.ReadData(rect, m_image, m_pitch);
+	}
 
 	unsigned long *image_lp = (unsigned long *)m_image;
 	unsigned long *buffer_lp = (unsigned long *)m_server->frameBuffer;
